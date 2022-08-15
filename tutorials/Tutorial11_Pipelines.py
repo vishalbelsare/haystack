@@ -1,3 +1,12 @@
+import logging
+
+# We configure how logging messages should be displayed and which log level should be used before importing Haystack.
+# Example log message:
+# INFO - haystack.utils.preprocessing -  Converting data/tutorial1/218_Olenna_Tyrell.txt
+# Default log level in basicConfig is WARNING so the explicit parameter is not necessary but can be changed easily:
+logging.basicConfig(format="%(levelname)s - %(name)s -  %(message)s", level=logging.WARNING)
+logging.getLogger("haystack").setLevel(logging.INFO)
+
 from haystack.utils import (
     clean_wiki_text,
     print_answers,
@@ -33,9 +42,7 @@ def tutorial11_pipelines():
 
     # Initialize dense retriever
     embedding_retriever = EmbeddingRetriever(
-        document_store,
-        model_format="sentence_transformers",
-        embedding_model="sentence-transformers/multi-qa-mpnet-base-dot-v1",
+        document_store, embedding_model="sentence-transformers/multi-qa-mpnet-base-dot-v1"
     )
     document_store.update_embeddings(embedding_retriever, update_existing_embeddings=False)
 
@@ -164,9 +171,6 @@ def tutorial11_pipelines():
                 return {}, "output_1"
 
         def run_batch(self, queries):
-            if isinstance(queries, str):
-                return self.run(queries)
-
             split = {"output_1": {"queries": []}, "output_2": {"queries": []}}
             for query in queries:
                 if "?" in query:

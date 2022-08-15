@@ -1,9 +1,10 @@
-from typing import List, Optional, Union, Tuple, Iterator
+from typing import List, Optional, Union, Tuple, Iterator, Any
 import logging
 from pathlib import Path
 
 import torch
 from torch.nn import DataParallel
+from tqdm.auto import tqdm
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 from haystack.errors import HaystackError
@@ -28,12 +29,14 @@ class SentenceTransformersRanker(BaseRanker):
      - directly get predictions via predict()
 
     Usage example:
-    ...
-    retriever = BM25Retriever(document_store=document_store)
-    ranker = SentenceTransformersRanker(model_name_or_path="cross-encoder/ms-marco-MiniLM-L-12-v2")
-    p = Pipeline()
-    p.add_node(component=retriever, name="ESRetriever", inputs=["Query"])
-    p.add_node(component=ranker, name="Ranker", inputs=["ESRetriever"])
+
+    ```python
+    |     retriever = BM25Retriever(document_store=document_store)
+    |     ranker = SentenceTransformersRanker(model_name_or_path="cross-encoder/ms-marco-MiniLM-L-12-v2")
+    |     p = Pipeline()
+    |     p.add_node(component=retriever, name="ESRetriever", inputs=["Query"])
+    |     p.add_node(component=ranker, name="Ranker", inputs=["ESRetriever"])
+    ```
     """
 
     def __init__(
@@ -43,7 +46,9 @@ class SentenceTransformersRanker(BaseRanker):
         top_k: int = 10,
         use_gpu: bool = True,
         devices: Optional[List[Union[str, torch.device]]] = None,
-        batch_size: Optional[int] = None,
+        batch_size: int = 16,
+        scale_score: bool = True,
+        progress_bar: bool = True,
     ):
         """
         :param model_name_or_path: Directory of a saved model or the name of a public model e.g.
@@ -57,6 +62,10 @@ class SentenceTransformersRanker(BaseRanker):
                         https://pytorch.org/docs/stable/tensor_attributes.html?highlight=torch%20device#torch.torch.device
                         (e.g. ["cuda:0"]).
         :param batch_size: Number of documents to process at a time.
+        :param scale_score: The raw predictions will be transformed using a Sigmoid activation function in case the model
+                            only predicts a single label. For multi-label predictions, no scaling is applied. Set this
+                            to False if you do not want any scaling of the raw predictions.
+        :param progress_bar: Whether to show a progress bar while processing the documents.
         """
         super().__init__()
 
@@ -66,7 +75,7 @@ class SentenceTransformersRanker(BaseRanker):
             self.devices = [torch.device(device) for device in devices]
         else:
             self.devices, _ = initialize_device_settings(use_cuda=use_gpu, multi_gpu=True)
-
+        self.progress_bar = progress_bar
         self.transformer_model = AutoModelForSequenceClassification.from_pretrained(
             pretrained_model_name_or_path=model_name_or_path, revision=model_version
         )
@@ -75,6 +84,15 @@ class SentenceTransformersRanker(BaseRanker):
             pretrained_model_name_or_path=model_name_or_path, revision=model_version
         )
         self.transformer_model.eval()
+
+        # we use sigmoid activation function to scale the score in case there is only a single label
+        # we do not apply any scaling when scale_score is set to False
+        num_labels = self.transformer_model.num_labels
+        self.activation_function: torch.nn.Module
+        if num_labels == 1 and scale_score:
+            self.activation_function = torch.nn.Sigmoid()
+        else:
+            self.activation_function = torch.nn.Identity()
 
         if len(self.devices) > 1:
             self.model = DataParallel(self.transformer_model, device_ids=self.devices)
@@ -119,13 +137,35 @@ class SentenceTransformersRanker(BaseRanker):
             reverse=True,
         )
 
-        # rank documents according to scores
-        sorted_documents = [doc for _, doc in sorted_scores_and_documents]
-        return sorted_documents[:top_k]
+        # add normalized scores to documents
+        sorted_documents = self._add_scores_to_documents(sorted_scores_and_documents[:top_k], logits_dim)
+
+        return sorted_documents
+
+    def _add_scores_to_documents(
+        self, sorted_scores_and_documents: List[Tuple[Any, Document]], logits_dim: int
+    ) -> List[Document]:
+        """
+        Normalize and add scores to retrieved result documents.
+
+        :param sorted_scores_and_documents: List of score, Document Tuples.
+        :param logits_dim: Dimensionality of the returned scores.
+        """
+        sorted_documents = []
+        for raw_score, doc in sorted_scores_and_documents:
+            if logits_dim >= 2:
+                score = self.activation_function(raw_score)[-1]
+            else:
+                score = self.activation_function(raw_score)[0]
+
+            doc.score = score.detach().cpu().numpy().tolist()
+            sorted_documents.append(doc)
+
+        return sorted_documents
 
     def predict_batch(
         self,
-        queries: Union[str, List[str]],
+        queries: List[str],
         documents: Union[List[Document], List[List[Document]]],
         top_k: Optional[int] = None,
         batch_size: Optional[int] = None,
@@ -136,7 +176,7 @@ class SentenceTransformersRanker(BaseRanker):
         Returns lists of Documents sorted by (desc.) similarity with the corresponding queries.
 
 
-        - If you provide a single query...
+        - If you provide a list containing a single query...
 
             - ... and a single list of Documents, the single list of Documents will be re-ranked based on the
               supplied query.
@@ -144,7 +184,7 @@ class SentenceTransformersRanker(BaseRanker):
               supplied query.
 
 
-        - If you provide a list of queries...
+        - If you provide a list of multiple queries...
 
             - ... you need to provide a list of lists of Documents. Each list of Documents will be re-ranked based on
               its corresponding query.
@@ -165,6 +205,7 @@ class SentenceTransformersRanker(BaseRanker):
         )
 
         batches = self._get_batches(all_queries=all_queries, all_docs=all_docs, batch_size=batch_size)
+        pb = tqdm(total=len(all_docs), disable=not self.progress_bar, desc="Ranking")
         preds = []
         for cur_queries, cur_docs in batches:
             features = self.transformer_tokenizer(
@@ -174,6 +215,8 @@ class SentenceTransformersRanker(BaseRanker):
             with torch.no_grad():
                 similarity_scores = self.transformer_model(**features).logits
                 preds.extend(similarity_scores)
+            pb.update(len(cur_docs))
+        pb.close()
 
         logits_dim = similarity_scores.shape[1]  # [batch_size, logits_dim]
         if single_list_of_docs:
@@ -185,9 +228,11 @@ class SentenceTransformersRanker(BaseRanker):
                 reverse=True,
             )
 
-            # rank documents according to scores
-            sorted_documents = [doc for _, doc in sorted_scores_and_documents if isinstance(doc, Document)]
-            return sorted_documents[:top_k]
+            # is this step needed?
+            sorted_documents = [(score, doc) for score, doc in sorted_scores_and_documents if isinstance(doc, Document)]
+            sorted_documents_with_scores = self._add_scores_to_documents(sorted_documents[:top_k], logits_dim)
+
+            return sorted_documents_with_scores
         else:
             # Group predictions together
             grouped_predictions = []
@@ -209,56 +254,46 @@ class SentenceTransformersRanker(BaseRanker):
                 )
 
                 # rank documents according to scores
-                sorted_documents = [doc for _, doc in sorted_scores_and_documents if isinstance(doc, Document)][:top_k]
-                result.append(sorted_documents)
+                sorted_documents = [
+                    (score, doc) for score, doc in sorted_scores_and_documents if isinstance(doc, Document)
+                ]
+                sorted_documents_with_scores = self._add_scores_to_documents(sorted_documents[:top_k], logits_dim)
+
+                result.append(sorted_documents_with_scores)
 
             return result
 
     def _preprocess_batch_queries_and_docs(
-        self, queries: Union[str, List[str]], documents: Union[List[Document], List[List[Document]]]
+        self, queries: List[str], documents: Union[List[Document], List[List[Document]]]
     ) -> Tuple[List[int], List[str], List[Document], bool]:
         number_of_docs = []
         all_queries = []
         all_docs: List[Document] = []
         single_list_of_docs = False
 
-        # Query case 1: single query
-        if isinstance(queries, str):
-            query = queries
-            # Docs case 1: single list of Documents -> rerank single list of Documents based on single query
-            if len(documents) > 0 and isinstance(documents[0], Document):
-                number_of_docs = [len(documents)]
-                all_queries = [query] * len(documents)
-                all_docs = documents  # type: ignore
-                single_list_of_docs = True
+        # Docs case 1: single list of Documents -> rerank single list of Documents based on single query
+        if len(documents) > 0 and isinstance(documents[0], Document):
+            if len(queries) != 1:
+                raise HaystackError("Number of queries must be 1 if a single list of Documents is provided.")
+            query = queries[0]
+            number_of_docs = [len(documents)]
+            all_queries = [query] * len(documents)
+            all_docs = documents  # type: ignore
+            single_list_of_docs = True
 
-            # Docs case 2: list of lists of Documents -> rerank each list of Documents based on single query
-            elif len(documents) > 0 and isinstance(documents[0], list):
-                for docs in documents:
-                    if not isinstance(docs, list):
-                        raise HaystackError(f"docs was of type {type(docs)}, but expected a list of Documents.")
-                    number_of_docs.append(len(docs))
-                    all_queries.extend([query] * len(docs))
-                    all_docs.extend(docs)
-
-        # Query case 2: list of queries
-        elif isinstance(queries, list) and len(queries) > 0 and isinstance(queries[0], str):
-            # Docs case 1: single list of Documents -> Not applicable
-            if len(documents) > 0 and isinstance(documents[0], Document):
-                raise HaystackError(
-                    "A list of lists of Documents needs to be provided if a list of queries is provided."
-                )
-
-            # Docs case 2: list of lists of Documents -> rerank each list of Documents based on corresponding query
-            if len(documents) > 0 and isinstance(documents[0], list):
-                if len(queries) != len(documents):
-                    raise HaystackError("Number of queries must be equal to number of provided Document lists.")
-                for query, cur_docs in zip(queries, documents):
-                    if not isinstance(cur_docs, list):
-                        raise HaystackError(f"cur_docs was of type {type(cur_docs)}, but expected a list of Documents.")
-                    number_of_docs.append(len(cur_docs))
-                    all_queries.extend([query] * len(cur_docs))
-                    all_docs.extend(cur_docs)
+        # Docs case 2: list of lists of Documents -> rerank each list of Documents based on corresponding query
+        # If queries contains a single query, apply it to each list of Documents
+        if len(documents) > 0 and isinstance(documents[0], list):
+            if len(queries) == 1:
+                queries = queries * len(documents)
+            if len(queries) != len(documents):
+                raise HaystackError("Number of queries must be equal to number of provided Document lists.")
+            for query, cur_docs in zip(queries, documents):
+                if not isinstance(cur_docs, list):
+                    raise HaystackError(f"cur_docs was of type {type(cur_docs)}, but expected a list of Documents.")
+                number_of_docs.append(len(cur_docs))
+                all_queries.extend([query] * len(cur_docs))
+                all_docs.extend(cur_docs)
 
         return number_of_docs, all_queries, all_docs, single_list_of_docs
 

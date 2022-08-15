@@ -1,4 +1,5 @@
 import pytest
+import math
 
 from haystack.errors import HaystackError
 from haystack.schema import Document
@@ -66,7 +67,7 @@ def test_ranker_batch_single_query_single_doc_list(ranker):
             id="5",
         ),
     ]
-    results = ranker.predict_batch(queries=query, documents=docs)
+    results = ranker.predict_batch(queries=[query], documents=docs)
     assert results[0] == docs[4]
 
 
@@ -98,7 +99,7 @@ def test_ranker_batch_single_query_multiple_doc_lists(ranker):
             id="5",
         ),
     ]
-    results = ranker.predict_batch(queries=query, documents=[docs, docs])
+    results = ranker.predict_batch(queries=[query], documents=[docs, docs])
     assert isinstance(results, list)
     assert isinstance(results[0], list)
     for reranked_docs in results:
@@ -141,39 +142,6 @@ def test_ranker_batch_multiple_queries_multiple_doc_lists(ranker):
     assert results[1][0] == docs[1]
 
 
-def test_ranker_batch_single_query_multiple_doc_lists(ranker):
-    # An error should be raised if number of queries does not match number of document lists
-    with pytest.raises(HaystackError):
-        query = "What is the most important building in King's Landing that has a religious background?"
-        docs = [
-            Document(
-                content="""Aaron Aaron ( or ; ""Ahärôn"") is a prophet, high priest, and the brother of Moses in the Abrahamic religions. Knowledge of Aaron, along with his brother Moses, comes exclusively from religious texts, such as the Bible and Quran. The Hebrew Bible relates that, unlike Moses, who grew up in the Egyptian royal court, Aaron and his elder sister Miriam remained with their kinsmen in the eastern border-land of Egypt (Goshen). When Moses first confronted the Egyptian king about the Israelites, Aaron served as his brother's spokesman (""prophet"") to the Pharaoh. Part of the Law (Torah) that Moses received from""",
-                meta={"name": "0"},
-                id="1",
-            ),
-            Document(
-                content="""Democratic Republic of the Congo to the south. Angola's capital, Luanda, lies on the Atlantic coast in the northwest of the country. Angola, although located in a tropical zone, has a climate that is not characterized for this region, due to the confluence of three factors: As a result, Angola's climate is characterized by two seasons: rainfall from October to April and drought, known as ""Cacimbo"", from May to August, drier, as the name implies, and with lower temperatures. On the other hand, while the coastline has high rainfall rates, decreasing from North to South and from to , with""",
-                id="2",
-            ),
-            Document(
-                content="""Schopenhauer, describing him as an ultimately shallow thinker: ""Schopenhauer has quite a crude mind ... where real depth starts, his comes to an end."" His friend Bertrand Russell had a low opinion on the philosopher, and attacked him in his famous ""History of Western Philosophy"" for hypocritically praising asceticism yet not acting upon it. On the opposite isle of Russell on the foundations of mathematics, the Dutch mathematician L. E. J. Brouwer incorporated the ideas of Kant and Schopenhauer in intuitionism, where mathematics is considered a purely mental activity, instead of an analytic activity wherein objective properties of reality are""",
-                meta={"name": "1"},
-                id="3",
-            ),
-            Document(
-                content="""The Dothraki vocabulary was created by David J. Peterson well in advance of the adaptation. HBO hired the Language Creatio""",
-                meta={"name": "2"},
-                id="4",
-            ),
-            Document(
-                content="""The title of the episode refers to the Great Sept of Baelor, the main religious building in King's Landing, where the episode's pivotal scene takes place. In the world created by George R. R. Martin""",
-                meta={},
-                id="5",
-            ),
-        ]
-        results = ranker.predict_batch(queries=[query], documents=[docs, docs])
-
-
 def test_ranker_two_logits(ranker_two_logits):
     assert isinstance(ranker_two_logits, BaseRanker)
     assert isinstance(ranker_two_logits, SentenceTransformersRanker)
@@ -206,3 +174,54 @@ def test_ranker_two_logits(ranker_two_logits):
     ]
     results = ranker_two_logits.predict(query=query, documents=docs)
     assert results[0] == docs[4]
+
+
+def test_ranker_returns_normalized_score(ranker):
+    query = "What is the most important building in King's Landing that has a religious background?"
+
+    docs = [
+        Document(
+            content="""Aaron Aaron ( or ; ""Ahärôn"") is a prophet, high priest, and the brother of Moses in the Abrahamic religions. Knowledge of Aaron, along with his brother Moses, comes exclusively from religious texts, such as the Bible and Quran. The Hebrew Bible relates that, unlike Moses, who grew up in the Egyptian royal court, Aaron and his elder sister Miriam remained with their kinsmen in the eastern border-land of Egypt (Goshen). When Moses first confronted the Egyptian king about the Israelites, Aaron served as his brother's spokesman (""prophet"") to the Pharaoh. Part of the Law (Torah) that Moses received from""",
+            meta={"name": "0"},
+            id="1",
+        )
+    ]
+
+    results = ranker.predict(query=query, documents=docs)
+    score = results[0].score
+    precomputed_score = 5.8796231e-05
+    assert math.isclose(precomputed_score, score, rel_tol=0.01)
+
+
+def test_ranker_returns_raw_score_when_no_scaling():
+    ranker = SentenceTransformersRanker(model_name_or_path="cross-encoder/ms-marco-MiniLM-L-12-v2", scale_score=False)
+    query = "What is the most important building in King's Landing that has a religious background?"
+
+    docs = [
+        Document(
+            content="""Aaron Aaron ( or ; ""Ahärôn"") is a prophet, high priest, and the brother of Moses in the Abrahamic religions. Knowledge of Aaron, along with his brother Moses, comes exclusively from religious texts, such as the Bible and Quran. The Hebrew Bible relates that, unlike Moses, who grew up in the Egyptian royal court, Aaron and his elder sister Miriam remained with their kinsmen in the eastern border-land of Egypt (Goshen). When Moses first confronted the Egyptian king about the Israelites, Aaron served as his brother's spokesman (""prophet"") to the Pharaoh. Part of the Law (Torah) that Moses received from""",
+            meta={"name": "0"},
+            id="1",
+        )
+    ]
+
+    results = ranker.predict(query=query, documents=docs)
+    score = results[0].score
+    precomputed_score = -9.744687
+    assert math.isclose(precomputed_score, score, rel_tol=0.001)
+
+
+def test_ranker_returns_raw_score_for_two_logits(ranker_two_logits):
+    query = "Welches ist das wichtigste Gebäude in Königsmund, das einen religiösen Hintergrund hat?"
+    docs = [
+        Document(
+            content="""Aaron Aaron (oder ; "Ahärôn") ist ein Prophet, Hohepriester und der Bruder von Moses in den abrahamitischen Religionen. Aaron ist ebenso wie sein Bruder Moses ausschließlich aus religiösen Texten wie der Bibel und dem Koran bekannt. Die hebräische Bibel berichtet, dass Aaron und seine ältere Schwester Mirjam im Gegensatz zu Mose, der am ägyptischen Königshof aufwuchs, bei ihren Verwandten im östlichen Grenzland Ägyptens (Goschen) blieben. Als Mose den ägyptischen König zum ersten Mal mit den Israeliten konfrontierte, fungierte Aaron als Sprecher ("Prophet") seines Bruders gegenüber dem Pharao. Ein Teil des Gesetzes (Tora), das Mose von""",
+            meta={"name": "0"},
+            id="1",
+        )
+    ]
+
+    results = ranker_two_logits.predict(query=query, documents=docs)
+    score = results[0].score
+    precomputed_score = -3.61354
+    assert math.isclose(precomputed_score, score, rel_tol=0.001)

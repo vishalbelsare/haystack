@@ -1,6 +1,6 @@
 # pylint: disable=too-many-public-methods
 
-from typing import Generator, Optional, Dict, List, Set, Union
+from typing import Generator, Optional, Dict, List, Set, Union, Any
 
 import logging
 import collections
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 try:
     from numba import njit  # pylint: disable=import-error
 except (ImportError, ModuleNotFoundError):
-    logger.info("Numba not found, replacing njit() with no-op implementation. Enable it with 'pip install numba'.")
+    logger.debug("Numba not found, replacing njit() with no-op implementation. Enable it with 'pip install numba'.")
 
     def njit(f):
         return f
@@ -57,6 +57,8 @@ class BaseDocumentStore(BaseComponent):
     """
     Base class for implementing Document Stores.
     """
+
+    outgoing_edges: int = 1
 
     index: Optional[str]
     label_index: Optional[str]
@@ -607,11 +609,16 @@ class BaseDocumentStore(BaseComponent):
     ) -> List[Document]:
         pass
 
-    def _drop_duplicate_documents(self, documents: List[Document]) -> List[Document]:
+    @abstractmethod
+    def update_document_meta(self, id: str, meta: Dict[str, Any], index: str = None):
+        pass
+
+    def _drop_duplicate_documents(self, documents: List[Document], index: Optional[str] = None) -> List[Document]:
         """
         Drop duplicates documents based on same hash ID
 
         :param documents: A list of Haystack Document objects.
+        :param index: name of the index
         :return: A list of Haystack Document objects.
         """
         _hash_ids: Set = set([])
@@ -620,7 +627,8 @@ class BaseDocumentStore(BaseComponent):
         for document in documents:
             if document.id in _hash_ids:
                 logger.info(
-                    f"Duplicate Documents: Document with id '{document.id}' already exists in index " f"'{self.index}'"
+                    f"Duplicate Documents: Document with id '{document.id}' already exists in index "
+                    f"'{index or self.index}'"
                 )
                 continue
             _documents.append(document)
@@ -640,6 +648,7 @@ class BaseDocumentStore(BaseComponent):
         documents that are not in the index yet.
 
         :param documents: A list of Haystack Document objects.
+        :param index: name of the index
         :param duplicate_documents: Handle duplicates document based on parameter options.
                                     Parameter options : ( 'skip','overwrite','fail')
                                     skip (default option): Ignore the duplicates documents
@@ -652,7 +661,7 @@ class BaseDocumentStore(BaseComponent):
 
         index = index or self.index
         if duplicate_documents in ("skip", "fail"):
-            documents = self._drop_duplicate_documents(documents)
+            documents = self._drop_duplicate_documents(documents, index)
             documents_found = self.get_documents_by_id(ids=[doc.id for doc in documents], index=index, headers=headers)
             ids_exist_in_db: List[str] = [doc.id for doc in documents_found]
 
@@ -793,15 +802,20 @@ class KeywordDocumentStore(BaseDocumentStore):
     @abstractmethod
     def query_batch(
         self,
-        queries: Union[str, List[str]],
-        filters: Optional[Dict[str, Union[Dict, List, str, int, float, bool]]] = None,
+        queries: List[str],
+        filters: Optional[
+            Union[
+                Dict[str, Union[Dict, List, str, int, float, bool]],
+                List[Dict[str, Union[Dict, List, str, int, float, bool]]],
+            ]
+        ] = None,
         top_k: int = 10,
         custom_query: Optional[str] = None,
         index: Optional[str] = None,
         headers: Optional[Dict[str, str]] = None,
         all_terms_must_match: bool = False,
         scale_score: bool = True,
-    ) -> Union[List[Document], List[List[Document]]]:
+    ) -> List[List[Document]]:
         """
         Scan through documents in DocumentStore and return a small number documents
         that are most relevant to the provided queries as defined by keyword matching algorithms like BM25.

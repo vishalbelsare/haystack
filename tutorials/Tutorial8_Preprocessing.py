@@ -17,6 +17,15 @@ docs = [
 This tutorial will show you all the tools that Haystack provides to help you cast your data into the right format.
 """
 
+import logging
+
+# We configure how logging messages should be displayed and which log level should be used before importing Haystack.
+# Example log message:
+# INFO - haystack.utils.preprocessing -  Converting data/tutorial1/218_Olenna_Tyrell.txt
+# Default log level in basicConfig is WARNING so the explicit parameter is not necessary but can be changed easily:
+logging.basicConfig(format="%(levelname)s - %(name)s -  %(message)s", level=logging.WARNING)
+logging.getLogger("haystack").setLevel(logging.INFO)
+
 # Here are the imports we need
 from pathlib import Path
 
@@ -37,7 +46,7 @@ def tutorial8_preprocessing():
     Haystack's converter classes are designed to help you turn files on your computer into the documents
     that can be processed by the Haystack pipeline.
     There are file converters for txt, pdf, docx files as well as a converter that is powered by Apache Tika.
-    The parameter `valid_langugages` does not convert files to the target language, but checks if the conversion worked as expected.
+    The parameter `valid_languages` does not convert files to the target language, but checks if the conversion worked as expected.
     """
 
     # Here are some examples of how you would use file converters

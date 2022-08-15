@@ -1,3 +1,12 @@
+import logging
+
+# We configure how logging messages should be displayed and which log level should be used before importing Haystack.
+# Example log message:
+# INFO - haystack.utils.preprocessing -  Converting data/tutorial1/218_Olenna_Tyrell.txt
+# Default log level in basicConfig is WARNING so the explicit parameter is not necessary but can be changed easily:
+logging.basicConfig(format="%(levelname)s - %(name)s -  %(message)s", level=logging.WARNING)
+logging.getLogger("haystack").setLevel(logging.INFO)
+
 import os
 import json
 import time
@@ -54,11 +63,7 @@ def tutorial15_tableqa():
     # **Here:** We use the EmbeddingRetriever capable of retrieving relevant content among a database
     # of texts and tables using dense embeddings.
 
-    retriever = EmbeddingRetriever(
-        document_store=document_store,
-        embedding_model="deepset/all-mpnet-base-v2-table",
-        model_format="sentence_transformers",
-    )
+    retriever = EmbeddingRetriever(document_store=document_store, embedding_model="deepset/all-mpnet-base-v2-table")
 
     # Add table embeddings to the tables in DocumentStore
     document_store.update_embeddings(retriever=retriever)
@@ -140,6 +145,8 @@ def tutorial15_tableqa():
 
     passages = read_texts(f"{doc_dir}/texts.json")
     document_store.write_documents(passages)
+
+    document_store.update_embeddings(retriever=retriever, update_existing_embeddings=False)
 
     # Example query whose answer resides in a text passage
     predictions = text_table_qa_pipeline.run(query="Which country does the film Macaroni come from?")

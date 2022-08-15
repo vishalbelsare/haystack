@@ -475,10 +475,11 @@ class DataSilo:
                 logger.info("Proportion clipped:      {}".format(clipped))
                 if clipped > 0.5:
                     logger.info(
-                        "[Haystack Tip] {}% of your samples got cut down to {} tokens. "
-                        "Consider increasing max_seq_len. "
-                        "This will lead to higher memory consumption but is likely to "
-                        "improve your model performance".format(round(clipped * 100, 1), max_seq_len)
+                        f"[Haystack Tip] {round(clipped * 100, 1)}% of your samples got cut down to {max_seq_len} tokens. "
+                        "Consider increasing max_seq_len "
+                        f"(the maximum value allowed with the current model is max_seq_len={self.processor.tokenizer.model_max_length}, "
+                        "if this is not enough consider splitting the document in smaller units or changing the model). "
+                        "This will lead to higher memory consumption but is likely to improve your model performance"
                     )
             elif "query_input_ids" in self.tensor_names and "passage_input_ids" in self.tensor_names:
                 logger.info(
@@ -672,7 +673,7 @@ class DataSiloForCrossVal:
         all_data = ConcatDataset(sets_to_concat)  # type: Dataset
 
         documents = []
-        keyfunc = lambda x: x[id_index][0]
+        keyfunc = lambda x: x[id_index][0]  # pylint: disable=unnecessary-lambda-assignment
         all_data = sorted(all_data.datasets, key=keyfunc)  # type: ignore
         for key, document in groupby(all_data, key=keyfunc):  # type: ignore
             documents.append(list(document))
@@ -698,7 +699,7 @@ class DataSiloForCrossVal:
 
             train_samples = []
             for doc in actual_train_set:
-                keyfunc = lambda x: x[id_index][1]
+                keyfunc = lambda x: x[id_index][1]  # pylint: disable=unnecessary-lambda-assignment
                 doc = sorted(doc, key=keyfunc)
                 for key, question in groupby(doc, key=keyfunc):
                     # add all available answrs to train set
@@ -729,7 +730,7 @@ class DataSiloForCrossVal:
     def _split_for_qa(
         documents: List, id_index: int, n_splits: int = 5, shuffle: bool = True, random_state: Optional[int] = None
     ):
-        keyfunc = lambda x: x[id_index][1]
+        keyfunc = lambda x: x[id_index][1]  # pylint: disable=unnecessary-lambda-assignment
         if shuffle:
             fixed_random = random.Random()
             fixed_random.seed(random_state)
@@ -811,7 +812,16 @@ class DistillationDataSilo(DataSilo):
         """
         Run the teacher model on the given batch.
         """
-        return self.teacher.inferencer.model(**batch)
+        params = {
+            "input_ids": batch["input_ids"],
+            "segment_ids": batch["segment_ids"],
+            "padding_mask": batch["padding_mask"],
+        }
+        if "output_hidden_states" in batch.keys():
+            params["output_hidden_states"] = batch["output_hidden_states"]
+        if "output_attentions" in batch.keys():
+            params["output_attentions"] = batch["output_attentions"]
+        return self.teacher.inferencer.model(**params)
 
     def _pass_batches(
         self,

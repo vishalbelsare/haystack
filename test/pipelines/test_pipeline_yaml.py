@@ -491,6 +491,9 @@ def test_load_yaml_custom_component_referencing_other_node_in_init(tmp_path):
         )
     pipeline = Pipeline.load_from_yaml(path=tmp_path / "tmp_config.yml")
     assert isinstance(pipeline.get_node("custom_node"), CustomNode)
+    assert isinstance(pipeline.get_node("custom_node").other_node, OtherNode)
+    assert pipeline.get_node("custom_node").name == "custom_node"
+    assert pipeline.get_node("custom_node").other_node.name == "other_node"
 
 
 def test_load_yaml_custom_component_with_helper_class_in_init(tmp_path):
@@ -1018,3 +1021,11 @@ def test_save_yaml_overwrite(tmp_path):
     with open(tmp_path / "saved_pipeline.yml", "r") as saved_yaml:
         content = saved_yaml.read()
         assert content != ""
+
+
+@pytest.mark.parametrize("pipeline_file", ["ray.simple.haystack-pipeline.yml", "ray.advanced.haystack-pipeline.yml"])
+def test_load_yaml_ray_args_in_pipeline(tmp_path, pipeline_file):
+    with pytest.raises(PipelineConfigError) as e:
+        pipeline = Pipeline.load_from_yaml(
+            SAMPLES_PATH / "pipeline" / pipeline_file, pipeline_name="ray_query_pipeline"
+        )

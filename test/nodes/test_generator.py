@@ -1,3 +1,4 @@
+import os
 import sys
 from typing import List
 
@@ -9,18 +10,15 @@ from haystack.nodes.answer_generator import Seq2SeqGenerator
 from haystack.pipelines import TranslationWrapperPipeline, GenerativeQAPipeline
 
 
-from ..conftest import DOCS_WITH_EMBEDDINGS
-
-
 # Keeping few (retriever,document_store) combination to reduce test time
 @pytest.mark.skipif(sys.platform in ["win32", "cygwin"], reason="Causes OOM on windows github runner")
-@pytest.mark.slow
+@pytest.mark.integration
 @pytest.mark.generator
 @pytest.mark.parametrize("retriever,document_store", [("embedding", "memory")], indirect=True)
 def test_generator_pipeline_with_translator(
-    document_store, retriever, rag_generator, en_to_de_translator, de_to_en_translator
+    document_store, retriever, rag_generator, en_to_de_translator, de_to_en_translator, docs_with_true_emb
 ):
-    document_store.write_documents(DOCS_WITH_EMBEDDINGS)
+    document_store.write_documents(docs_with_true_emb)
     query = "Was ist die Hauptstadt der Bundesrepublik Deutschland?"
     base_pipeline = GenerativeQAPipeline(retriever=retriever, generator=rag_generator)
     pipeline = TranslationWrapperPipeline(
@@ -32,22 +30,22 @@ def test_generator_pipeline_with_translator(
     assert "berlin" in answers[0].answer
 
 
-@pytest.mark.slow
+@pytest.mark.integration
 @pytest.mark.generator
-def test_rag_token_generator(rag_generator):
+def test_rag_token_generator(rag_generator, docs_with_true_emb):
     query = "What is capital of the Germany?"
-    generated_docs = rag_generator.predict(query=query, documents=DOCS_WITH_EMBEDDINGS, top_k=1)
+    generated_docs = rag_generator.predict(query=query, documents=docs_with_true_emb, top_k=1)
     answers = generated_docs["answers"]
     assert len(answers) == 1
     assert "berlin" in answers[0].answer
 
 
-@pytest.mark.slow
+@pytest.mark.integration
 @pytest.mark.generator
 @pytest.mark.parametrize("document_store", ["memory"], indirect=True)
 @pytest.mark.parametrize("retriever", ["embedding"], indirect=True)
-def test_generator_pipeline(document_store, retriever, rag_generator):
-    document_store.write_documents(DOCS_WITH_EMBEDDINGS)
+def test_generator_pipeline(document_store, retriever, rag_generator, docs_with_true_emb):
+    document_store.write_documents(docs_with_true_emb)
     query = "What is capital of the Germany?"
     pipeline = GenerativeQAPipeline(retriever=retriever, generator=rag_generator)
     output = pipeline.run(query=query, params={"Generator": {"top_k": 2}, "Retriever": {"top_k": 1}})
@@ -57,16 +55,16 @@ def test_generator_pipeline(document_store, retriever, rag_generator):
 
 
 @pytest.mark.skipif(sys.platform in ["win32", "cygwin"], reason="Causes OOM on windows github runner")
-@pytest.mark.slow
+@pytest.mark.integration
 @pytest.mark.generator
 @pytest.mark.parametrize("document_store", ["memory"], indirect=True)
 @pytest.mark.parametrize("retriever", ["retribert", "dpr_lfqa"], indirect=True)
 @pytest.mark.parametrize("lfqa_generator", ["yjernite/bart_eli5", "vblagoje/bart_lfqa"], indirect=True)
 @pytest.mark.embedding_dim(128)
-def test_lfqa_pipeline(document_store, retriever, lfqa_generator):
+def test_lfqa_pipeline(document_store, retriever, lfqa_generator, docs_with_true_emb):
     # reuse existing DOCS but regenerate embeddings with retribert
     docs: List[Document] = []
-    for idx, d in enumerate(DOCS_WITH_EMBEDDINGS):
+    for idx, d in enumerate(docs_with_true_emb):
         docs.append(Document(d.content, str(idx)))
     document_store.write_documents(docs)
     document_store.update_embeddings(retriever)
@@ -78,15 +76,15 @@ def test_lfqa_pipeline(document_store, retriever, lfqa_generator):
     assert "Germany" in answers[0].answer, answers[0].answer
 
 
-@pytest.mark.slow
+@pytest.mark.integration
 @pytest.mark.generator
 @pytest.mark.parametrize("document_store", ["memory"], indirect=True)
 @pytest.mark.parametrize("retriever", ["retribert"], indirect=True)
 @pytest.mark.embedding_dim(128)
-def test_lfqa_pipeline_unknown_converter(document_store, retriever):
+def test_lfqa_pipeline_unknown_converter(document_store, retriever, docs_with_true_emb):
     # reuse existing DOCS but regenerate embeddings with retribert
     docs: List[Document] = []
-    for idx, d in enumerate(DOCS_WITH_EMBEDDINGS):
+    for idx, d in enumerate(docs_with_true_emb):
         docs.append(Document(d.content, str(idx)))
     document_store.write_documents(docs)
     document_store.update_embeddings(retriever)
@@ -100,15 +98,15 @@ def test_lfqa_pipeline_unknown_converter(document_store, retriever):
     assert "doesn't have input converter registered for patrickvonplaten/t5-tiny-random" in str(exception_info.value)
 
 
-@pytest.mark.slow
+@pytest.mark.integration
 @pytest.mark.generator
 @pytest.mark.parametrize("document_store", ["memory"], indirect=True)
 @pytest.mark.parametrize("retriever", ["retribert"], indirect=True)
 @pytest.mark.embedding_dim(128)
-def test_lfqa_pipeline_invalid_converter(document_store, retriever):
+def test_lfqa_pipeline_invalid_converter(document_store, retriever, docs_with_true_emb):
     # reuse existing DOCS but regenerate embeddings with retribert
     docs: List[Document] = []
-    for idx, d in enumerate(DOCS_WITH_EMBEDDINGS):
+    for idx, d in enumerate(docs_with_true_emb):
         docs.append(Document(d.content, str(idx)))
     document_store.write_documents(docs)
     document_store.update_embeddings(retriever)
@@ -127,3 +125,14 @@ def test_lfqa_pipeline_invalid_converter(document_store, retriever):
     with pytest.raises(Exception) as exception_info:
         output = pipeline.run(query=query, params={"top_k": 1})
     assert "does not have a valid __call__ method signature" in str(exception_info.value)
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    not os.environ.get("OPENAI_API_KEY", None),
+    reason="No OpenAI API key provided. Please export an env var called OPENAI_API_KEY containing the OpenAI API key to run this test.",
+)
+def test_openai_answer_generator(openai_generator, docs):
+    prediction = openai_generator.predict(query="Who lives in Berlin?", documents=docs, top_k=1)
+    assert len(prediction["answers"]) == 1
+    assert "Carla" in prediction["answers"][0].answer

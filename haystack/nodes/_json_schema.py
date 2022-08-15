@@ -249,6 +249,12 @@ def get_json_schema(filename: str, version: str, modules: List[str] = ["haystack
                 "type": "string",
                 "const": version,
             },
+            "extras": {
+                "title": "Additional properties group",
+                "description": "To be specified only if contains special pipelines (for example, if this is a Ray pipeline)",
+                "type": "string",
+                "enum": ["ray"],
+            },
             "components": {
                 "title": "Components",
                 "description": "Component nodes and their configurations, to later be used in the pipelines section. Define here all the building blocks for the pipelines.",
@@ -283,6 +289,26 @@ def get_json_schema(filename: str, version: str, modules: List[str] = ["haystack
                                         "type": "array",
                                         "items": {"type": "string"},
                                     },
+                                    "serve_deployment_kwargs": {
+                                        "title": "serve_deployment_kwargs",
+                                        "description": "Arguments to be passed to the Ray Serve `deployment()` method (only for Ray pipelines)",
+                                        "type": "object",
+                                        "properties": {
+                                            "num_replicas": {
+                                                "description": "How many replicas Ray should create for this node (only for Ray pipelines)",
+                                                "type": "integer",
+                                            },
+                                            "version": {"type": "string"},
+                                            "prev_version": {"type": "string"},
+                                            "init_args": {"type": "array"},
+                                            "init_kwargs": {"type": "object"},
+                                            "router_prefix": {"type": "string"},
+                                            "ray_actor_options": {"type": "object"},
+                                            "user_config": {"type": {}},
+                                            "max_concurrent_queries": {"type": "integer"},
+                                        },
+                                        "additionalProperties": True,
+                                    },
                                 },
                                 "required": ["name", "inputs"],
                                 "additionalProperties": False,
@@ -298,6 +324,20 @@ def get_json_schema(filename: str, version: str, modules: List[str] = ["haystack
         },
         "required": ["version", "components", "pipelines"],
         "additionalProperties": False,
+        "oneOf": [
+            {
+                "not": {"required": ["extras"]},
+                "properties": {
+                    "pipelines": {
+                        "title": "Pipelines",
+                        "items": {
+                            "properties": {"nodes": {"items": {"not": {"required": ["serve_deployment_kwargs"]}}}}
+                        },
+                    }
+                },
+            },
+            {"properties": {"extras": {"enum": ["ray"]}}, "required": ["extras"]},
+        ],
         "definitions": schema_definitions,
     }
     return pipeline_schema
@@ -346,16 +386,16 @@ def update_json_schema(destination_path: Path = JSON_SCHEMAS_PATH):
         index_name = "haystack-pipeline.schema.json"
         with open(destination_path / index_name, "r") as json_file:
             index = json.load(json_file)
-            index["oneOf"].append(
-                {
-                    "allOf": [
-                        {"properties": {"version": {"const": haystack_version}}},
-                        {
-                            "$ref": "https://raw.githubusercontent.com/deepset-ai/haystack/master/haystack/json-schemas/"
-                            f"haystack-pipeline-{haystack_version}.schema.json"
-                        },
-                    ]
-                }
-            )
+            new_entry = {
+                "allOf": [
+                    {"properties": {"version": {"const": haystack_version}}},
+                    {
+                        "$ref": "https://raw.githubusercontent.com/deepset-ai/haystack/master/haystack/json-schemas/"
+                        f"haystack-pipeline-{haystack_version}.schema.json"
+                    },
+                ]
+            }
+            if new_entry not in index["oneOf"]:
+                index["oneOf"].append(new_entry)
         with open(destination_path / index_name, "w") as json_file:
             json.dump(index, json_file, indent=2)
